@@ -516,7 +516,7 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
     }
 
     // Recompute the displayed trajectory with the latest pose-graph
-    // corrections; completion gets the packed 7N doubles (or nil).
+    // corrections; completion gets the packed 8N doubles (or nil).
     private func applyCorrectionsToDisplay(completion: @escaping (Data?) -> Void) {
         guard let xrslam = xrslam, !rawTimes.isEmpty else {
             appendLog("WARN", "corrections apply skipped (no samples)")
@@ -534,18 +534,18 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
                 return
             }
             guard let data = corrected,
-                  data.count % (7 * MemoryLayout<Double>.size) == 0 else {
+                  data.count % (8 * MemoryLayout<Double>.size) == 0 else {
                 self.appendLog("WARN", "corrections apply returned no data")
                 completion(nil)
                 return
             }
-            let n = data.count / (7 * MemoryLayout<Double>.size)
+            let n = data.count / (8 * MemoryLayout<Double>.size)
             var pts: [Vec3] = []
             pts.reserveCapacity(n)
             data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
                 let d = raw.bindMemory(to: Double.self)
                 for i in 0..<n {
-                    pts.append(Vec3(x: d[7 * i + 1], y: d[7 * i + 2], z: d[7 * i + 3]))
+                    pts.append(Vec3(x: d[8 * i + 1], y: d[8 * i + 2], z: d[8 * i + 3]))
                 }
             }
             self.correctedPoints = pts
@@ -556,15 +556,15 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
 
     private func writeCorrectedFile(_ data: Data) {
         guard let base = sessionBase else { return }
-        let n = data.count / (7 * MemoryLayout<Double>.size)
+        let n = data.count / (8 * MemoryLayout<Double>.size)
         var body = ""
         body.reserveCapacity(n * 100)
         data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
             let d = raw.bindMemory(to: Double.self)
             for i in 0..<n {
                 body += String(format: "%.6f %.6f %.6f %.6f %.6f %.6f %.6f %.6f\n",
-                               d[7 * i], d[7 * i + 1], d[7 * i + 2], d[7 * i + 3],
-                               d[7 * i + 4], d[7 * i + 5], d[7 * i + 6], d[7 * i + 7])
+                               d[8 * i], d[8 * i + 1], d[8 * i + 2], d[8 * i + 3],
+                               d[8 * i + 4], d[8 * i + 5], d[8 * i + 6], d[8 * i + 7])
             }
         }
         let fm = FileManager.default

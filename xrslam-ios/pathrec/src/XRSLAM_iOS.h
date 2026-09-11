@@ -58,8 +58,8 @@ typedef NS_ENUM(NSUInteger, SysState) {
 
 // Apply the latest corrections to a recorded trajectory (flat arrays:
 // times N, positions 3N, quaternions 4N in xyzw order). Returns corrected
-// values as 7N doubles (t, xyz, xyzw) or nil when there are no corrections.
-// Completion is called on the main thread.
+// values as N samples of 8 doubles each (t, x, y, z, qx, qy, qz, qw), or
+// nil when there are no corrections. Completion is called on the main thread.
 - (void)lcApplyToTrajectoryTimes:(NSData *)ts
                        positions:(NSData *)pos
                      quaternions:(NSData *)quat

@@ -334,21 +334,30 @@
                 const double *qp = (const double *)quat.bytes;
                 std::vector<double> tv(n);
                 std::vector<lc::Pose> sv(n);
+                Eigen::Quaterniond prevQ = Eigen::Quaterniond::Identity();
                 for (size_t i = 0; i < n; ++i) {
                     tv[i] = tp[i];
                     sv[i].t = Eigen::Vector3d(pp[3 * i], pp[3 * i + 1],
                                               pp[3 * i + 2]);
-                    sv[i].q = Eigen::Quaterniond(qp[4 * i + 3], qp[4 * i],
-                                                 qp[4 * i + 1],
-                                                 qp[4 * i + 2]);
-                    sv[i].q.normalize();
+                    Eigen::Quaterniond q(qp[4 * i + 3], qp[4 * i],
+                                         qp[4 * i + 1], qp[4 * i + 2]);
+                    if (q.norm() < 1e-6) {
+                        // SDK zero-quaternion artifact (tracking onset):
+                        // carry the previous valid orientation forward.
+                        q = prevQ;
+                    } else {
+                        q.normalize();
+                        prevQ = q;
+                    }
+                    sv[i].q = q;
                 }
                 std::vector<lc::Pose> ov;
                 lc::apply_corrections(tv, sv, self->_lcKfTimes,
                                       self->_lcCorrections, ov);
                 std::vector<double> packed;
-                packed.reserve(ov.size() * 7);
+                packed.reserve(ov.size() * 8);
                 for (size_t i = 0; i < ov.size(); ++i) {
+                    // 8 doubles per sample: t, x, y, z, qx, qy, qz, qw (TUM).
                     packed.push_back(tv[i]);
                     packed.push_back(ov[i].t.x());
                     packed.push_back(ov[i].t.y());

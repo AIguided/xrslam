@@ -82,6 +82,11 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
     private var closurePassInFlight = false
     private var loopKept = 0
     private var loopTotal = 0
+    // Latest per-keyframe corrections (world-frame), for live current-position
+    // correction between passes. C_k = (t(3), quat xyzw(4)) per keyframe.
+    private var corrKfTimes: [Double] = []
+    private var corrQuat: [Double] = []   // xyzw, 4 per keyframe
+    private var corrTrans: [Double] = []  // 3 per keyframe
 
     private var displayLink: CADisplayLink?
     private var lastInfoUpdate: Double = 0
@@ -252,6 +257,9 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
         closurePassInFlight = false
         loopKept = 0
         loopTotal = 0
+        corrKfTimes.removeAll()
+        corrQuat.removeAll()
+        corrTrans.removeAll()
         xrslam?.lcReset()
         sessionActive = true
         UIApplication.shared.isIdleTimerDisabled = true
@@ -291,6 +299,9 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
                                           result?["rejected"] as? Int ?? 0,
                                           correctedFlag ? "yes" : "no", corrBytes))
             if correctedFlag && corrBytes > 0 {
+                if let dict = result {
+                    self.storeCorrections(from: dict)
+                }
                 self.applyCorrectionsToDisplay { data in
                     if let data = data {
                         self.writeCorrectedFile(data)
@@ -439,11 +450,12 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
         rawTimes.append(t)
         rawXYZ.append(contentsOf: [tx, ty, tz])
         rawQuat.append(contentsOf: [qx, qy, qz, qw])
+        let displayPoint = correctedPoint(t: t, p: p) ?? p
         if correctedPoints != nil {
-            correctedPoints?.append(p)  // tail point; refreshed next pass
+            correctedPoints?.append(displayPoint)  // live-corrected tail
         }
         pathView.points = correctedPoints ?? pathPoints
-        lastPosition = (tx, ty, tz)
+        lastPosition = (displayPoint.x, displayPoint.y, displayPoint.z)
     }
 
     private func captureKeyframe(at t: Double) {
@@ -509,10 +521,98 @@ final class PathRecViewController: UIViewController, CameraDelegate, MotionDeleg
                                           r["rejected"] as? Int ?? 0,
                                           r["corrMax"] as? Double ?? 0.0))
             if (r["corrected"] as? Bool ?? false) {
+                self.storeCorrections(from: r)
                 self.applyCorrectionsToDisplay { _ in }
             }
             self.updateInfoLabel()
         }
+    }
+
+    // Parse the pass result's packed corrections into interpolatable arrays.
+    private func storeCorrections(from dict: [AnyHashable: Any]) {
+        guard let ktData = dict["kfTimes"] as? Data,
+              let cData = dict["corrections"] as? Data,
+              ktData.count % MemoryLayout<Double>.size == 0,
+              cData.count % (7 * MemoryLayout<Double>.size) == 0 else { return }
+        let m = ktData.count / MemoryLayout<Double>.size
+        guard m > 0, cData.count / (7 * MemoryLayout<Double>.size) == m else { return }
+        var kt = [Double](repeating: 0, count: m)
+        var qt = [Double](repeating: 0, count: m * 4)
+        var tr = [Double](repeating: 0, count: m * 3)
+        ktData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let d = raw.bindMemory(to: Double.self)
+            for i in 0..<m { kt[i] = d[i] }
+        }
+        cData.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            let d = raw.bindMemory(to: Double.self)
+            for i in 0..<m {
+                tr[3 * i] = d[7 * i]
+                tr[3 * i + 1] = d[7 * i + 1]
+                tr[3 * i + 2] = d[7 * i + 2]
+                qt[4 * i] = d[7 * i + 3]
+                qt[4 * i + 1] = d[7 * i + 4]
+                qt[4 * i + 2] = d[7 * i + 5]
+                qt[4 * i + 3] = d[7 * i + 6]
+            }
+        }
+        corrKfTimes = kt
+        corrQuat = qt
+        corrTrans = tr
+    }
+
+    // Correct a single (t, p) with the latest corrections, interpolated over
+    // keyframe times (clamped outside the covered range). Mirrors the bridge
+    // apply_corrections: pos' = Rc * pos + tc.
+    private func correctedPoint(t: Double, p: Vec3) -> Vec3? {
+        let m = corrKfTimes.count
+        guard m > 0, corrTrans.count == m * 3, corrQuat.count == m * 4 else { return nil }
+        var k0 = 0
+        var k1 = 0
+        var a = 0.0
+        if t <= corrKfTimes[0] {
+            k0 = 0
+            k1 = 0
+        } else if t >= corrKfTimes[m - 1] {
+            k0 = m - 1
+            k1 = m - 1
+        } else {
+            var lo = 0
+            var hi = m - 1
+            while hi - lo > 1 {
+                let mid = (lo + hi) / 2
+                if corrKfTimes[mid] <= t { lo = mid } else { hi = mid }
+            }
+            k0 = lo
+            k1 = hi
+            let dt = corrKfTimes[k1] - corrKfTimes[k0]
+            a = dt > 1e-9 ? (t - corrKfTimes[k0]) / dt : 0.0
+        }
+        var q0x = corrQuat[4 * k0], q0y = corrQuat[4 * k0 + 1]
+        var q0z = corrQuat[4 * k0 + 2], q0w = corrQuat[4 * k0 + 3]
+        var q1x = corrQuat[4 * k1], q1y = corrQuat[4 * k1 + 1]
+        var q1z = corrQuat[4 * k1 + 2], q1w = corrQuat[4 * k1 + 3]
+        let dot = q0x * q1x + q0y * q1y + q0z * q1z + q0w * q1w
+        if dot < 0 {
+            q1x = -q1x; q1y = -q1y; q1z = -q1z; q1w = -q1w
+        }
+        var qx = q0x * (1 - a) + q1x * a
+        var qy = q0y * (1 - a) + q1y * a
+        var qz = q0z * (1 - a) + q1z * a
+        var qw = q0w * (1 - a) + q1w * a
+        let n = sqrt(qx * qx + qy * qy + qz * qz + qw * qw)
+        guard n > 1e-9 else { return nil }
+        qx /= n; qy /= n; qz /= n; qw /= n
+        // v' = v + w*(2*qv x v) + qv x (2*qv x v)
+        let t1x = 2 * (qy * p.z - qz * p.y)
+        let t1y = 2 * (qz * p.x - qx * p.z)
+        let t1z = 2 * (qx * p.y - qy * p.x)
+        let rx = p.x + qw * t1x + (qy * t1z - qz * t1y)
+        let ry = p.y + qw * t1y + (qz * t1x - qx * t1z)
+        let rz = p.z + qw * t1z + (qx * t1y - qy * t1x)
+        let trx = corrTrans[3 * k0] * (1 - a) + corrTrans[3 * k1] * a
+        let trY = corrTrans[3 * k0 + 1] * (1 - a) + corrTrans[3 * k1 + 1] * a
+        let trz = corrTrans[3 * k0 + 2] * (1 - a) + corrTrans[3 * k1 + 2] * a
+        return Vec3(x: rx + trx, y: ry + trY, z: rz + trz)
     }
 
     // Recompute the displayed trajectory with the latest pose-graph

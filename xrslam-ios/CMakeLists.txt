@@ -7,4 +7,5 @@ option(APP_IDENTIFIER_PREFIX "Common prefix for all iOS app identifiers" "xrslam
 
 if(TARGET xrslam  AND TARGET xrslam-localization)
   add_subdirectory(visualizer)
+  add_subdirectory(pathrec)
 endif()

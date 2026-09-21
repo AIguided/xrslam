@@ -94,6 +94,10 @@ void XRSLAMManager::Init(std::shared_ptr<Config> config) {
 void XRSLAMManager::Destroy() {
     std::cout << "-----------------Destroy XRSLAM v" << XRSLAM_VERSION
               << " successfully-----------" << std::endl;
+    std::lock_guard<std::mutex> lck(input_mutex_);
+    detail_.reset();
+    cur_image_.reset();
+    config_.reset();
 }
 
 int XRSLAMManager::CheckLicense(const char *license_path,

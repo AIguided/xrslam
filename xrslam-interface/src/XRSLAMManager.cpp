@@ -112,6 +112,17 @@ void XRSLAMManager::PushImage(XRSLAMImage *image) {
             std::make_shared<xrslam::extra::OpenCvImage>();
         int cols = config_->camera_resolution()[0];
         int rows = config_->camera_resolution()[1];
+        // Guard: a bad stride/resolution combination here feeds the tracker
+        // garbage Mats whose downstream CLAHE allocations crash the process
+        // (this build cannot unwind C++ exceptions). Drop the frame instead.
+        if (cols <= 0 || rows <= 0 || cols > 8192 || rows > 8192 ||
+            image->stride < cols * image->channel) {
+            fprintf(stderr,
+                    "[xrslam][push-image] drop frame: resolution=%dx%d "
+                    "stride=%d channel=%d\n",
+                    cols, rows, image->stride, image->channel);
+            return;
+        }
         opencv_image->t = image->timeStamp;
 
         cv::Mat img;

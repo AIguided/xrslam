@@ -1,6 +1,8 @@
 #include <xrslam/extra/opencv_image.h>
 #include <xrslam/extra/poisson_disk_filter.h>
 
+#include <cstdio>
+
 using namespace cv;
 
 namespace xrslam::extra {
@@ -154,7 +156,25 @@ void OpenCvImage::track_keypoints(const Image *next_image,
 }
 
 void OpenCvImage::preprocess(double clipLimit, int width, int height) {
-    clahe(clipLimit, width, height)->apply(image, image);
+    // Guard: on session start this CLAHE path has requested garbage-sized
+    // copyMakeBorder allocations (~900 GB), and this static build cannot
+    // unwind C++ exceptions (cv::error faults, killing the process). Skip
+    // preprocessing for degenerate dimensions instead of dying; the frame
+    // simply carries no features and tracking re-initializes later.
+    if (image.cols <= 0 || image.rows <= 0 ||
+        image.cols > 8192 || image.rows > 8192) {
+        fprintf(stderr,
+                "[xrslam][preprocess] skip clahe: bad image %dx%d type=%d "
+                "t=%.3f\n",
+                image.cols, image.rows, image.type(), t);
+        return;
+    }
+    // OpenCV CLAHE is not safe in the bundled iOS 4.13.0 static framework:
+    // the first valid 640x480, 8x8-tile frame deterministically enters
+    // copyMakeBorder with corrupt internal state and requests ~900 GB. Keep
+    // the native grayscale image, then build the same optical-flow pyramid;
+    // feature detection/tracking continues without contrast equalization.
+    // Re-enable only after replacing or rebuilding the OpenCV framework.
     image_pyramid.clear();
     buildOpticalFlowPyramid(image, image_pyramid, Size(21, 21),
                             (int)level_num(), true);
@@ -177,23 +197,28 @@ void OpenCvImage::correct_distortion(const matrix<3> &intrinsics,
 }
 
 CLAHE *OpenCvImage::clahe(double clipLimit, int width, int height) {
-    static Ptr<CLAHE> s_clahe = createCLAHE(clipLimit, cv::Size(width, height));
+    // thread_local (not static): the previous process-wide instance shared
+    // its internal Mats and Ptr refcount across feature-tracker worker
+    // threads and XRSLAM sessions, leaving a corruption window on session
+    // churn. One instance per worker thread removes that shared state.
+    thread_local Ptr<CLAHE> s_clahe =
+        createCLAHE(clipLimit, cv::Size(width, height));
     return s_clahe.get();
 }
 
 GFTTDetector *OpenCvImage::gftt(size_t max_points) {
-    static Ptr<GFTTDetector> s_gftt =
+    thread_local Ptr<GFTTDetector> s_gftt =
         GFTTDetector::create(max_points, 1.0e-3, 20, 3, true);
     return s_gftt.get();
 }
 
 FastFeatureDetector *OpenCvImage::fast() {
-    static Ptr<FastFeatureDetector> s_fast = FastFeatureDetector::create();
+    thread_local Ptr<FastFeatureDetector> s_fast = FastFeatureDetector::create();
     return s_fast.get();
 }
 
 ORB *OpenCvImage::orb() {
-    static Ptr<ORB> s_orb = ORB::create();
+    thread_local Ptr<ORB> s_orb = ORB::create();
     return s_orb.get();
 }
 
